@@ -270,7 +270,7 @@ class OlympicBot:
                 return None
             locator.wait_for(state="attached", timeout=2_000)
             return locator
-        except PlaywrightTimeoutError:
+        except Exception:
             return None
 
     # ---------------------------------------------------------------
@@ -394,7 +394,17 @@ class OlympicBot:
                     return BotResult(status="error", detail="No cargó la agenda.")
                 first_iteration = False
 
-            row = self.find_class_row()
+            try:
+                row = self.find_class_row()
+            except Exception as exc:
+                self.logger.warning("Error buscando clase (navegación?), recargando: %s", exc)
+                try:
+                    self._page.reload(wait_until="domcontentloaded")  # type: ignore[union-attr]
+                except Exception:
+                    pass
+                time_module.sleep(interval)
+                continue
+
             if row is None:
                 self.logger.debug("Clase %s-%s no encontrada en esta iteración.",
                                   self.settings.target_class_start,
@@ -408,7 +418,16 @@ class OlympicBot:
                         pass
                 continue
 
-            state = self.inspect_class_state(row)
+            try:
+                state = self.inspect_class_state(row)
+            except Exception as exc:
+                self.logger.warning("Error inspeccionando estado (navegación?), recargando: %s", exc)
+                try:
+                    self._page.reload(wait_until="domcontentloaded")  # type: ignore[union-attr]
+                except Exception:
+                    pass
+                time_module.sleep(interval)
+                continue
             self.logger.debug("Estado actual de la clase: %s", state)
 
             # 1) Ya reservada -> éxito implícito
