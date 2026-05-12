@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 import time as time_module
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -371,66 +371,42 @@ class OlympicBot:
     # ---------------------------------------------------------------
     def attempt_loop(self) -> BotResult:
         """
-        Bucle controlado: cada CHECK_INTERVAL_SECONDS revisa la fila,
-        hasta TARGET_END_TIME o hasta lograr reservar.
+        Bucle por minutos: cada 60 segundos recarga la agenda, verifica el
+        botón y manda notificación a Telegram con el resultado del intento.
+        Sale en cuanto reserva, detecta sin cupos, o se acaba TARGET_END_TIME.
         """
         end_time = self.settings.target_end_time
-        interval = max(0.5, self.settings.check_interval_seconds)
-
-        first_iteration = True
-        announced_found = False
+        class_label = f"{self.settings.target_class_start} - {self.settings.target_class_end}"
 
         while True:
-            now = datetime.now().time()
-            if now >= end_time:
+            now = datetime.now()
+            if now.time() >= end_time:
                 self.logger.info("Ventana de tiempo agotada (%s).", end_time)
                 return BotResult(status="timeout", detail="Botón nunca apareció disponible.")
 
-            # Recarga inteligente: solo recargamos en la primera iteración
-            # (ya venimos de login). Luego, para no ser agresivos, recargamos
-            # cada 10 segundos como máximo.
-            if first_iteration:
-                if not self.goto_agenda():
-                    return BotResult(status="error", detail="No cargó la agenda.")
-                first_iteration = False
+            time_str = now.strftime("%H:%M")
+
+            # Recargar agenda fresca en cada intento
+            if not self.goto_agenda():
+                return BotResult(status="error", detail="No cargó la agenda.")
 
             try:
                 row = self.find_class_row()
             except Exception as exc:
-                self.logger.warning("Error buscando clase (navegación?), recargando: %s", exc)
-                try:
-                    self._page.reload(wait_until="domcontentloaded")  # type: ignore[union-attr]
-                except Exception:
-                    pass
-                time_module.sleep(interval)
-                continue
-
-            if row is None:
-                self.logger.debug("Clase %s-%s no encontrada en esta iteración.",
-                                  self.settings.target_class_start,
-                                  self.settings.target_class_end)
-                # Recargar suavemente cada ~10 s mientras no aparezca
-                time_module.sleep(interval)
-                if int(time_module.time()) % 10 == 0:
-                    try:
-                        self._page.reload(wait_until="domcontentloaded")  # type: ignore[union-attr]
-                    except Exception:
-                        pass
+                self.logger.warning("Error buscando clase, recargando: %s", exc)
+                time_module.sleep(5)
                 continue
 
             try:
-                state = self.inspect_class_state(row)
+                state = self.inspect_class_state(row) if row else "not_available"
             except Exception as exc:
-                self.logger.warning("Error inspeccionando estado (navegación?), recargando: %s", exc)
-                try:
-                    self._page.reload(wait_until="domcontentloaded")  # type: ignore[union-attr]
-                except Exception:
-                    pass
-                time_module.sleep(interval)
+                self.logger.warning("Error inspeccionando estado, recargando: %s", exc)
+                time_module.sleep(5)
                 continue
-            self.logger.debug("Estado actual de la clase: %s", state)
 
-            # 1) Ya reservada -> éxito implícito
+            self.logger.debug("Estado %s: %s", time_str, state)
+
+            # 1) Ya reservada
             if state == "already_reserved":
                 self.logger.info("La clase ya estaba reservada previamente.")
                 return BotResult(status="already_reserved", detail="Reserva preexistente detectada.")
@@ -438,14 +414,12 @@ class OlympicBot:
             # 2) Sin cupos
             if state == "no_slots":
                 self.logger.warning("La clase está sin cupos.")
-                self._save_screenshot("no_slots")
-                return BotResult(status="no_slots", detail="Clase sin cupos disponibles.")
+                shot = self._save_screenshot("no_slots")
+                return BotResult(status="no_slots", detail="Clase sin cupos disponibles.", screenshot_path=shot)
 
             # 3) Botón "Reservar" presente
             if state == "reserve":
                 self.logger.info("¡Botón 'Reservar' detectado!")
-
-                # MODO DRY_RUN -> solo detectar y notificar
                 if self.settings.dry_run:
                     shot = self._save_screenshot("dry_run_detected")
                     return BotResult(
@@ -453,43 +427,29 @@ class OlympicBot:
                         detail="Modo prueba: se detectó el botón Reservar pero NO se clickeó.",
                         screenshot_path=shot,
                     )
-
-                # MODO REAL -> clickear y confirmar
                 if not self.click_reserve_button(row):
-                    self._save_screenshot("reserve_click_failed")
-                    return BotResult(
-                        status="error",
-                        detail="Falló el clic en el botón Reservar.",
-                    )
+                    shot = self._save_screenshot("reserve_click_failed")
+                    return BotResult(status="error", detail="Falló el clic en el botón Reservar.", screenshot_path=shot)
                 self.confirm_if_needed()
                 if self.verify_reservation():
                     shot = self._save_screenshot("reserved_ok")
-                    return BotResult(
-                        status="reserved",
-                        detail="Reserva confirmada en el portal.",
-                        screenshot_path=shot,
-                    )
+                    return BotResult(status="reserved", detail="Reserva confirmada en el portal.", screenshot_path=shot)
                 else:
                     shot = self._save_screenshot("reserve_unverified")
-                    return BotResult(
-                        status="error",
-                        detail="Se hizo clic pero la verificación no confirmó la reserva.",
-                        screenshot_path=shot,
-                    )
+                    return BotResult(status="error", detail="Se hizo clic pero la verificación no confirmó la reserva.", screenshot_path=shot)
 
-            # 4) Aún no disponible -> aviso ÚNICO de seguimiento y esperar
-            if state == "not_available":
-                if not announced_found:
-                    self.notifier.send_message(
-                        "🔎 Clase encontrada, pero aún no disponible. Seguimiento activo."
-                    )
-                    announced_found = True
-                time_module.sleep(interval)
-                continue
+            # 4) No disponible / desconocido → notificar y esperar 60 segundos
+            self.notifier.send_message(
+                f"🔄 <b>{time_str}</b> — Clase {class_label} no disponible. "
+                f"Próximo intento en 1 min."
+            )
 
-            # 5) Estado desconocido -> seguir intentando
-            self.logger.debug("Estado desconocido; reintentando.")
-            time_module.sleep(interval)
+            # Esperar 60 s pero salir antes si se acaba la ventana
+            sleep_until = now + timedelta(seconds=60)
+            while datetime.now() < sleep_until:
+                time_module.sleep(1)
+                if datetime.now().time() >= end_time:
+                    break
 
     # ---------------------------------------------------------------
     # Orquestación pública
