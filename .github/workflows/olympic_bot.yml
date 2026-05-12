@@ -1,0 +1,49 @@
+name: Olympic GYM Bot
+
+on:
+  # ---------------------------------------------------------------
+  # Dos disparadores cron para cubrir el cambio de hora de Chile:
+  #   - 09:55 UTC = 06:55 CLST (verano, UTC-3, sep-mar) → espera 5 min
+  #   - 10:55 UTC = 06:55 CLT  (invierno, UTC-4, abr-sep) → espera 5 min
+  # El bot tiene un exit temprano si arranca >10 min antes: la entrada
+  # de la temporada incorrecta saldrá en segundos sin hacer nada.
+  # ---------------------------------------------------------------
+  schedule:
+    - cron: '55 9 * * *'   # verano  (CLST, UTC-3): 06:55 hora Santiago
+    - cron: '55 10 * * *'  # invierno (CLT, UTC-4): 06:55 hora Santiago
+  workflow_dispatch:        # también permite lanzarlo a mano desde GitHub
+
+env:
+  TZ: America/Santiago      # datetime.now() devuelve hora de Chile
+
+jobs:
+  reservar:
+    name: Reservar clase Olympic GYM
+    runs-on: ubuntu-latest
+    timeout-minutes: 20     # máximo 5 min de espera + ejecución del bot
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Instalar dependencias Python
+        run: pip install -r requirements.txt
+
+      - name: Instalar Playwright Chromium (con dependencias del sistema)
+        run: python -m playwright install --with-deps chromium
+
+      - name: Ejecutar bot
+        env:
+          OLYMPIC_EMAIL: ${{ secrets.OLYMPIC_EMAIL }}
+          OLYMPIC_PASSWORD: ${{ secrets.OLYMPIC_PASSWORD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          HEADLESS: 'true'
+          DRY_RUN: 'false'
+        run: python main.py

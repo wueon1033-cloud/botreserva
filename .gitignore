@@ -1,0 +1,23 @@
+# Credenciales y datos sensibles
+.env
+
+# Salidas del bot
+logs/
+screenshots/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
