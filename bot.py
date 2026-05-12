@@ -237,41 +237,38 @@ class OlympicBot:
     # ---------------------------------------------------------------
     # Localizar la fila/tarjeta de la clase 09:00 - 10:00
     # ---------------------------------------------------------------
-    def find_class_row(self) -> Optional[Locator]:
-        """
-        Busca el contenedor (fila de tabla, tarjeta, etc.) que corresponde
-        a la franja TARGET_CLASS_START - TARGET_CLASS_END del día actual.
-
-        Estrategia robusta:
-        1. Buscar todos los elementos que contengan el texto "09:00".
-        2. Filtrar los que también contengan "10:00" en su ascendiente común
-           más cercano (típicamente la misma fila <tr> o la misma tarjeta).
-        3. Devolver el primero, que debería ser único en la vista del día.
-        """
-        assert self._page is not None
-        page = self._page
+    def _class_xpath(self) -> str:
         start = self.settings.target_class_start
         end = self.settings.target_class_end
-
-        # XPath: cualquier elemento que contenga "09:00" y "10:00" en su texto.
-        # Esto cubre <tr>, <div class="card">, <li>, etc.
-        xpath = (
+        return (
             f"xpath=//*[contains(normalize-space(.), '{start}') "
             f"and contains(normalize-space(.), '{end}')]"
-            # Filtra para quedarse con los nodos "más pequeños" que cumplen
-            # la condición (descartando <body>, <html>, etc.):
             f"[not(.//*[contains(normalize-space(.), '{start}') "
             f"and contains(normalize-space(.), '{end}')])]"
         )
+
+    def find_class_row(self) -> Optional[Locator]:
+        """Devuelve la primera fila que coincide con la clase objetivo."""
+        rows = self.find_all_class_rows()
+        return rows[0] if rows else None
+
+    def find_all_class_rows(self) -> list:
+        """Devuelve TODAS las filas que coinciden (hoy + mañana, etc.)."""
+        assert self._page is not None
         try:
-            locator = page.locator(xpath).first
-            # Verificar que efectivamente existe
-            if locator.count() == 0:
-                return None
-            locator.wait_for(state="attached", timeout=2_000)
-            return locator
+            locators = self._page.locator(self._class_xpath())
+            count = locators.count()
+            result = []
+            for i in range(count):
+                try:
+                    loc = locators.nth(i)
+                    loc.wait_for(state="attached", timeout=1_000)
+                    result.append(loc)
+                except Exception:
+                    pass
+            return result
         except Exception:
-            return None
+            return []
 
     # ---------------------------------------------------------------
     # Inspeccionar el estado del botón dentro de la fila
@@ -417,7 +414,7 @@ class OlympicBot:
                 shot = self._save_screenshot("no_slots")
                 return BotResult(status="no_slots", detail="Clase sin cupos disponibles.", screenshot_path=shot)
 
-            # 3) Botón "Reservar" presente
+            # 3) Botón "Reservar" presente en al menos una fila
             if state == "reserve":
                 self.logger.info("¡Botón 'Reservar' detectado!")
                 if self.settings.dry_run:
@@ -427,16 +424,17 @@ class OlympicBot:
                         detail="Modo prueba: se detectó el botón Reservar pero NO se clickeó.",
                         screenshot_path=shot,
                     )
-                if not self.click_reserve_button(row):
-                    shot = self._save_screenshot("reserve_click_failed")
-                    return BotResult(status="error", detail="Falló el clic en el botón Reservar.", screenshot_path=shot)
-                self.confirm_if_needed()
-                if self.verify_reservation():
-                    shot = self._save_screenshot("reserved_ok")
-                    return BotResult(status="reserved", detail="Reserva confirmada en el portal.", screenshot_path=shot)
-                else:
-                    shot = self._save_screenshot("reserve_unverified")
-                    return BotResult(status="error", detail="Se hizo clic pero la verificación no confirmó la reserva.", screenshot_path=shot)
+                # Reservar todas las clases disponibles (hoy + mañana)
+                n = self._reserve_all_available(class_label)
+                shot = self._save_screenshot("reserved_ok")
+                if n > 0:
+                    return BotResult(
+                        status="reserved",
+                        detail=f"Se reservaron {n} clase(s) {class_label}.",
+                        screenshot_path=shot,
+                    )
+                shot2 = self._save_screenshot("reserve_click_failed")
+                return BotResult(status="error", detail="Falló el clic en el botón Reservar.", screenshot_path=shot2)
 
             # 4) No disponible / desconocido → notificar y esperar 60 segundos
             self.notifier.send_message(
@@ -450,6 +448,40 @@ class OlympicBot:
                 time_module.sleep(1)
                 if datetime.now().time() >= end_time:
                     break
+
+    def _reserve_all_available(self, class_label: str) -> int:
+        """
+        Intenta reservar TODAS las filas con botón 'Reservar' disponible.
+        Recarga la agenda entre cada reserva. Devuelve cuántas reservó.
+        """
+        total = 0
+        while True:
+            if not self.goto_agenda():
+                break
+            rows = self.find_all_class_rows()
+            clicked_one = False
+            for row in rows:
+                try:
+                    state = self.inspect_class_state(row)
+                except Exception:
+                    continue
+                if state != "reserve":
+                    continue
+                self.logger.info("Reservando clase disponible (%d ya reservada/s).", total)
+                self._reserved_clicked = False  # resetear candado para siguiente clase
+                if self.click_reserve_button(row):
+                    self.confirm_if_needed()
+                    total += 1
+                    clicked_one = True
+                    self.notifier.send_message(
+                        f"✅ Clase {class_label} reservada ({total} en total). "
+                        f"Buscando más clases disponibles..."
+                    )
+                    time_module.sleep(2)
+                    break  # recargar agenda para buscar la siguiente
+            if not clicked_one:
+                break  # no quedan más disponibles
+        return total
 
     # ---------------------------------------------------------------
     # Orquestación pública
