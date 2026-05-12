@@ -1,39 +1,23 @@
 name: Olympic GYM Bot
 
 on:
-  # ---------------------------------------------------------------
-  # Dos disparadores cron para cubrir el cambio de hora de Chile:
-  #   - 09:55 UTC = 06:55 CLST (verano, UTC-3, sep-mar) → espera 5 min
-  #   - 10:55 UTC = 06:55 CLT  (invierno, UTC-4, abr-sep) → espera 5 min
-  # El bot tiene un exit temprano si arranca >10 min antes: la entrada
-  # de la temporada incorrecta saldrá en segundos sin hacer nada.
-  # ---------------------------------------------------------------
   schedule:
-    - cron: '55 9 * * *'   # verano  (CLST, UTC-3): 06:55 hora Santiago
-    - cron: '55 10 * * *'  # invierno (CLT, UTC-4): 06:55 hora Santiago
-  workflow_dispatch:        # permite lanzarlo a mano con parámetros opcionales
+    - cron: '0 * * * *'   # cada hora en punto (00:00, 01:00, 02:00 ... 23:00)
+  workflow_dispatch:
     inputs:
-      target_start_time:
-        description: 'Hora de inicio (HH:MM). Dejar vacío para usar 07:00'
-        required: false
-        default: ''
-      target_end_time:
-        description: 'Hora de fin (HH:MM). Dejar vacío para usar 07:05'
-        required: false
-        default: ''
       dry_run:
-        description: 'DRY_RUN: true = solo detecta sin reservar'
+        description: 'true = solo detecta sin reservar (prueba)'
         required: false
         default: 'false'
 
 env:
-  TZ: America/Santiago      # datetime.now() devuelve hora de Chile
+  TZ: America/Santiago
 
 jobs:
   reservar:
     name: Reservar clase Olympic GYM
     runs-on: ubuntu-latest
-    timeout-minutes: 20     # máximo 5 min de espera + ejecución del bot
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -48,17 +32,27 @@ jobs:
       - name: Instalar dependencias Python
         run: pip install -r requirements.txt
 
-      - name: Instalar Playwright Chromium (con dependencias del sistema)
+      - name: Instalar Playwright Chromium
         run: python -m playwright install --with-deps chromium
+
+      - name: Calcular ventana de 15 min desde ahora (hora Chile)
+        id: window
+        run: |
+          export TZ=America/Santiago
+          START=$(date +"%H:%M")
+          END=$(date -d "+15 minutes" +"%H:%M")
+          echo "start=$START" >> $GITHUB_OUTPUT
+          echo "end=$END"     >> $GITHUB_OUTPUT
+          echo "Ventana activa: $START → $END hora Santiago"
 
       - name: Ejecutar bot
         env:
-          OLYMPIC_EMAIL: ${{ secrets.OLYMPIC_EMAIL }}
-          OLYMPIC_PASSWORD: ${{ secrets.OLYMPIC_PASSWORD }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          HEADLESS: 'true'
-          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
-          TARGET_START_TIME: ${{ github.event.inputs.target_start_time || '07:00' }}
-          TARGET_END_TIME: ${{ github.event.inputs.target_end_time || '07:05' }}
+          OLYMPIC_EMAIL:        ${{ secrets.OLYMPIC_EMAIL }}
+          OLYMPIC_PASSWORD:     ${{ secrets.OLYMPIC_PASSWORD }}
+          TELEGRAM_BOT_TOKEN:   ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:     ${{ secrets.TELEGRAM_CHAT_ID }}
+          HEADLESS:             'true'
+          DRY_RUN:              ${{ github.event.inputs.dry_run || 'false' }}
+          TARGET_START_TIME:    ${{ steps.window.outputs.start }}
+          TARGET_END_TIME:      ${{ steps.window.outputs.end }}
         run: python main.py
