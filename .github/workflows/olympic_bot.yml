@@ -2,7 +2,12 @@ name: Olympic GYM Bot
 
 on:
   schedule:
-    - cron: '0 * * * *'   # cada hora en punto (00:00, 01:00, 02:00 ... 23:00)
+    # 4 bloques de 6 horas cubren las 24h del día (hora UTC):
+    #   00:00 UTC = 21:00 o 20:00 Santiago (bloque noche)
+    #   06:00 UTC = 03:00 o 02:00 Santiago (bloque madrugada)
+    #   12:00 UTC = 09:00 o 08:00 Santiago (bloque mañana)
+    #   18:00 UTC = 15:00 o 14:00 Santiago (bloque tarde)
+    - cron: '0 0,6,12,18 * * *'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -17,7 +22,7 @@ jobs:
   reservar:
     name: Reservar clase Olympic GYM
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 360   # 6 horas exactas (límite de GitHub Actions)
 
     steps:
       - name: Checkout
@@ -35,24 +40,42 @@ jobs:
       - name: Instalar Playwright Chromium
         run: python -m playwright install --with-deps chromium
 
-      - name: Calcular ventana de 15 min desde ahora (hora Chile)
-        id: window
+      # ----------------------------------------------------------------
+      # Bucle continuo: cada hora calcula la ventana de 15 min y corre
+      # el bot. Entre intentos duerme hasta la próxima hora en punto.
+      # El instalador ya corrió → no se repite.
+      # ----------------------------------------------------------------
+      - name: Bucle de reservas (6 horas continuas)
+        env:
+          OLYMPIC_EMAIL:      ${{ secrets.OLYMPIC_EMAIL }}
+          OLYMPIC_PASSWORD:   ${{ secrets.OLYMPIC_PASSWORD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          HEADLESS:           'true'
+          DRY_RUN:            ${{ github.event.inputs.dry_run || 'false' }}
         run: |
           export TZ=America/Santiago
-          START=$(date +"%H:%M")
-          END=$(date -d "+15 minutes" +"%H:%M")
-          echo "start=$START" >> $GITHUB_OUTPUT
-          echo "end=$END"     >> $GITHUB_OUTPUT
-          echo "Ventana activa: $START → $END hora Santiago"
+          # Parar 5 min antes del límite de 6 h para evitar corte abrupto
+          BLOCK_END=$(( $(date +%s) + 6*3600 - 300 ))
 
-      - name: Ejecutar bot
-        env:
-          OLYMPIC_EMAIL:        ${{ secrets.OLYMPIC_EMAIL }}
-          OLYMPIC_PASSWORD:     ${{ secrets.OLYMPIC_PASSWORD }}
-          TELEGRAM_BOT_TOKEN:   ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID:     ${{ secrets.TELEGRAM_CHAT_ID }}
-          HEADLESS:             'true'
-          DRY_RUN:              ${{ github.event.inputs.dry_run || 'false' }}
-          TARGET_START_TIME:    ${{ steps.window.outputs.start }}
-          TARGET_END_TIME:      ${{ steps.window.outputs.end }}
-        run: python main.py
+          while [ $(date +%s) -lt $BLOCK_END ]; do
+            START=$(date +"%H:%M")
+            END=$(date -d "+15 minutes" +"%H:%M")
+            echo "=============================="
+            echo "Intento: $START → $END (Santiago)"
+            echo "=============================="
+
+            TARGET_START_TIME=$START TARGET_END_TIME=$END python main.py || true
+
+            # Dormir hasta la próxima hora en punto
+            NEXT_HOUR=$(date -d "$(date +%H:00) +1 hour" +%s)
+            NOW=$(date +%s)
+            SLEEP_SECS=$(( NEXT_HOUR - NOW ))
+
+            if [ $SLEEP_SECS -gt 60 ]; then
+              echo "Durmiendo $((SLEEP_SECS / 60)) min hasta la próxima hora..."
+              sleep $SLEEP_SECS
+            fi
+          done
+
+          echo "Bloque de 6 h completado."
