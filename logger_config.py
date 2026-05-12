@@ -90,8 +90,8 @@ class TelegramLogHandler(logging.Handler):
 
 
 def add_telegram_handler(logger: logging.Logger, notifier) -> None:
-    """Añade al logger un handler que envía WARNING+ a Telegram."""
-    handler = TelegramLogHandler(notifier, level=logging.WARNING)
+    """Añade al logger un handler que envía INFO+ a Telegram."""
+    handler = TelegramLogHandler(notifier, level=logging.INFO)
     handler.setFormatter(
         logging.Formatter(
             fmt="%(asctime)s [%(levelname)s] %(message)s",

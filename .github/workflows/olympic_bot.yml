@@ -2,11 +2,7 @@ name: Olympic GYM Bot
 
 on:
   schedule:
-    # 4 bloques de 6 horas cubren las 24h del día (hora UTC):
-    #   00:00 UTC = 21:00 o 20:00 Santiago (bloque noche)
-    #   06:00 UTC = 03:00 o 02:00 Santiago (bloque madrugada)
-    #   12:00 UTC = 09:00 o 08:00 Santiago (bloque mañana)
-    #   18:00 UTC = 15:00 o 14:00 Santiago (bloque tarde)
+    # 4 bloques de 6 horas cubren las 24h del día
     - cron: '0 0,6,12,18 * * *'
   workflow_dispatch:
     inputs:
@@ -22,7 +18,7 @@ jobs:
   reservar:
     name: Reservar clase Olympic GYM
     runs-on: ubuntu-latest
-    timeout-minutes: 360   # 6 horas exactas (límite de GitHub Actions)
+    timeout-minutes: 360
 
     steps:
       - name: Checkout
@@ -37,15 +33,17 @@ jobs:
       - name: Instalar dependencias Python
         run: pip install -r requirements.txt
 
-      - name: Instalar Playwright Chromium
+      - name: Instalar Playwright Chromium (una sola vez por bloque)
         run: python -m playwright install --with-deps chromium
 
-      # ----------------------------------------------------------------
-      # Bucle continuo: cada hora calcula la ventana de 15 min y corre
-      # el bot. Entre intentos duerme hasta la próxima hora en punto.
-      # El instalador ya corrió → no se repite.
-      # ----------------------------------------------------------------
-      - name: Bucle de reservas (6 horas continuas)
+      # ---------------------------------------------------------------
+      # Bucle de 6 horas:
+      #   - Despierta en HH:58 (2 min antes de cada hora en punto)
+      #   - Ventana: HH:58 → HH+1:15 (17 min)
+      #   - Duerme hasta el próximo HH:58
+      #   - Repite ~6 veces antes de que el siguiente bloque arranque
+      # ---------------------------------------------------------------
+      - name: Bucle continuo de reservas (6 horas)
         env:
           OLYMPIC_EMAIL:      ${{ secrets.OLYMPIC_EMAIL }}
           OLYMPIC_PASSWORD:   ${{ secrets.OLYMPIC_PASSWORD }}
@@ -55,27 +53,34 @@ jobs:
           DRY_RUN:            ${{ github.event.inputs.dry_run || 'false' }}
         run: |
           export TZ=America/Santiago
-          # Parar 5 min antes del límite de 6 h para evitar corte abrupto
           BLOCK_END=$(( $(date +%s) + 6*3600 - 300 ))
 
           while [ $(date +%s) -lt $BLOCK_END ]; do
             START=$(date +"%H:%M")
-            END=$(date -d "+15 minutes" +"%H:%M")
+            END=$(date -d "+17 minutes" +"%H:%M")
             echo "=============================="
             echo "Intento: $START → $END (Santiago)"
             echo "=============================="
 
             TARGET_START_TIME=$START TARGET_END_TIME=$END python main.py || true
 
-            # Dormir hasta la próxima hora en punto
-            NEXT_HOUR=$(date -d "$(date +%H:00) +1 hour" +%s)
-            NOW=$(date +%s)
-            SLEEP_SECS=$(( NEXT_HOUR - NOW ))
+            # Calcular próximo HH:58 (2 min antes de la siguiente hora en punto)
+            NOW_EPOCH=$(date +%s)
+            CURRENT_HOUR_EPOCH=$(date -d "$(date +%H):00:00" +%s)
+            THIS_58=$(( CURRENT_HOUR_EPOCH + 58*60 ))
+
+            if [ $NOW_EPOCH -ge $THIS_58 ]; then
+              NEXT_WAKEUP=$(( CURRENT_HOUR_EPOCH + 3600 + 58*60 ))
+            else
+              NEXT_WAKEUP=$THIS_58
+            fi
+
+            SLEEP_SECS=$(( NEXT_WAKEUP - NOW_EPOCH ))
 
             if [ $SLEEP_SECS -gt 60 ]; then
-              echo "Durmiendo $((SLEEP_SECS / 60)) min hasta la próxima hora..."
+              echo "Durmiendo $(( SLEEP_SECS / 60 )) min hasta próximo HH:58..."
               sleep $SLEEP_SECS
             fi
           done
 
-          echo "Bloque de 6 h completado."
+          echo "Bloque de 6h completado."
