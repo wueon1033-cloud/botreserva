@@ -49,8 +49,10 @@ jobs:
           OLYMPIC_PASSWORD:   ${{ secrets.OLYMPIC_PASSWORD }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
-          HEADLESS:           'true'
-          DRY_RUN:            ${{ github.event.inputs.dry_run || 'false' }}
+          HEADLESS:             'true'
+          DRY_RUN:              ${{ github.event.inputs.dry_run || 'false' }}
+          TARGET_CLASS_START:   '21:00'
+          TARGET_CLASS_END:     '22:00'
         run: |
           export TZ=America/Santiago
           BLOCK_END=$(( $(date +%s) + 6*3600 - 300 ))
