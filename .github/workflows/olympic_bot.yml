@@ -11,7 +11,20 @@ on:
   schedule:
     - cron: '55 9 * * *'   # verano  (CLST, UTC-3): 06:55 hora Santiago
     - cron: '55 10 * * *'  # invierno (CLT, UTC-4): 06:55 hora Santiago
-  workflow_dispatch:        # también permite lanzarlo a mano desde GitHub
+  workflow_dispatch:        # permite lanzarlo a mano con parámetros opcionales
+    inputs:
+      target_start_time:
+        description: 'Hora de inicio (HH:MM). Dejar vacío para usar 07:00'
+        required: false
+        default: ''
+      target_end_time:
+        description: 'Hora de fin (HH:MM). Dejar vacío para usar 07:05'
+        required: false
+        default: ''
+      dry_run:
+        description: 'DRY_RUN: true = solo detecta sin reservar'
+        required: false
+        default: 'false'
 
 env:
   TZ: America/Santiago      # datetime.now() devuelve hora de Chile
@@ -45,5 +58,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           HEADLESS: 'true'
-          DRY_RUN: 'false'
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+          TARGET_START_TIME: ${{ github.event.inputs.target_start_time || '07:00' }}
+          TARGET_END_TIME: ${{ github.event.inputs.target_end_time || '07:05' }}
         run: python main.py
